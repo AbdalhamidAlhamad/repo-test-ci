@@ -126,11 +126,13 @@ jobs:
 
       - name: Skip – conflicts not detected
         if: steps.pr.outputs.mergeable_state != 'dirty'
-        run: echo "PR #${{ steps.pr.outputs.pr_number }} is not marked as dirty. Nothing to do."
+        run: |
+          echo "PR #${{ steps.pr.outputs.pr_number }} is not marked as dirty. Nothing to do."
 
       - name: Skip – branch is on a fork
         if: steps.pr.outputs.mergeable_state == 'dirty' && steps.pr.outputs.can_push != 'true'
-        run: echo "PR #${{ steps.pr.outputs.pr_number }} comes from a fork. Skipping because pushing is not allowed."
+        run: |
+          echo "PR #${{ steps.pr.outputs.pr_number }} comes from a fork. Skipping because pushing is not allowed."
 
       - name: Checkout PR branch
         if: steps.pr.outputs.mergeable_state == 'dirty' && steps.pr.outputs.can_push == 'true'
