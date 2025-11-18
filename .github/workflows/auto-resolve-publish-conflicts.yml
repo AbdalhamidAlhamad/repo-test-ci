@@ -1,0 +1,267 @@
+name: Auto Resolve Publish Conflicts
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Run for a single PR or every open PR on the target base branch.'
+        required: true
+        default: single
+        type: choice
+        options:
+          - single
+          - all
+      pr_number:
+        description: 'PR number to fix when running in single mode.'
+        required: false
+      base_branch:
+        description: 'Base branch to use during manual runs.'
+        required: false
+        default: main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  select-prs:
+    name: Select PRs
+    runs-on: ubuntu-latest
+    outputs:
+      pr_numbers: ${{ steps.determine.outputs.pr_numbers }}
+      count: ${{ steps.determine.outputs.count }}
+      base_branch: ${{ steps.determine.outputs.base_branch }}
+    steps:
+      - name: Determine targets
+        id: determine
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const eventName = context.eventName;
+            const repoFullName = `${context.repo.owner}/${context.repo.repo}`;
+            let prNumbers = [];
+            let baseBranch = context.payload.inputs?.base_branch || 'main';
+
+            if (eventName === 'pull_request_target') {
+              prNumbers = [context.payload.pull_request.number];
+              baseBranch = context.payload.pull_request.base.ref;
+            } else if (eventName === 'workflow_dispatch') {
+              const mode = context.payload.inputs?.mode || 'single';
+              if (mode === 'single') {
+                const prNumber = Number(context.payload.inputs?.pr_number);
+                if (!prNumber) {
+                  core.setFailed('`pr_number` input is required when mode=single.');
+                  return;
+                }
+                prNumbers = [prNumber];
+              } else {
+                const prs = await github.paginate(github.rest.pulls.list, {
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  state: 'open',
+                  base: baseBranch,
+                  per_page: 100,
+                });
+                prNumbers = prs.map((pr) => pr.number);
+              }
+            }
+
+            core.setOutput('pr_numbers', JSON.stringify(prNumbers));
+            core.setOutput('count', String(prNumbers.length));
+            core.setOutput('base_branch', baseBranch);
+
+  resolve-prs:
+    name: Resolve PR conflicts
+    needs: select-prs
+    if: needs.select-prs.outputs.count != '0'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: ${{ fromJSON(needs.select-prs.outputs.pr_numbers) }}
+    steps:
+      - name: Fetch PR metadata
+        id: pr
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = Number('${{ matrix.pr }}');
+            const maxAttempts = 6;
+            const delayMs = 2000;
+
+            const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+            let prData;
+            for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+              const response = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+              prData = response.data;
+              if (prData.mergeable_state && prData.mergeable_state !== 'unknown') {
+                break;
+              }
+              if (attempt < maxAttempts - 1) {
+                core.info(`mergeable_state=unknown, retrying (${attempt + 1}/${maxAttempts - 1})`);
+                await wait(delayMs);
+              }
+            }
+
+            if (!prData) {
+              core.setFailed(`Unable to load PR #${prNumber}.`);
+              return;
+            }
+
+            const headRepoFullName = prData.head.repo?.full_name || '';
+            const baseRepoFullName = `${owner}/${repo}`;
+            const sameRepo = headRepoFullName === baseRepoFullName;
+
+            core.setOutput('pr_number', prNumber.toString());
+            core.setOutput('head_ref', prData.head.ref);
+            core.setOutput('head_repo_full', headRepoFullName);
+            core.setOutput('base_ref', prData.base.ref);
+            core.setOutput('mergeable_state', prData.mergeable_state || 'unknown');
+            core.setOutput('can_push', sameRepo ? 'true' : 'false');
+            core.setOutput('html_url', prData.html_url);
+
+      - name: Skip – conflicts not detected
+        if: steps.pr.outputs.mergeable_state != 'dirty'
+        run: echo "PR #${{ steps.pr.outputs.pr_number }} is not marked as dirty. Nothing to do."
+
+      - name: Skip – branch is on a fork
+        if: steps.pr.outputs.mergeable_state == 'dirty' && steps.pr.outputs.can_push != 'true'
+        run: echo "PR #${{ steps.pr.outputs.pr_number }} comes from a fork. Skipping because pushing is not allowed."
+
+      - name: Checkout PR branch
+        if: steps.pr.outputs.mergeable_state == 'dirty' && steps.pr.outputs.can_push == 'true'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.pr.outputs.head_repo_full || github.repository }}
+          ref: ${{ steps.pr.outputs.head_ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: Configure git remotes
+        if: steps.pr.outputs.mergeable_state == 'dirty' && steps.pr.outputs.can_push == 'true'
+        run: |
+          set -euo pipefail
+          if git remote | grep -q "^base$"; then
+            git remote remove base
+          fi
+          git remote add base "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch base "${{ steps.pr.outputs.base_ref }}"
+
+      - name: Auto-resolve publishing conflicts
+        id: resolver
+        if: steps.pr.outputs.mergeable_state == 'dirty' && steps.pr.outputs.can_push == 'true'
+        env:
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          set +e
+          git merge --no-commit --no-ff base/"$BASE_REF"
+          merge_status=$?
+          set -e
+
+          if [ "$merge_status" -eq 0 ]; then
+            echo "Merge completed without conflicts. Aborting because there is nothing to resolve."
+            git merge --abort
+            echo "resolved=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          conflicted="$(git diff --name-only --diff-filter=U)"
+          if [ -z "$conflicted" ]; then
+            echo "Git reported conflicts but no unmerged files were found."
+            git merge --abort
+            echo "resolved=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          unsupported=0
+          echo "Conflicted files:"
+          echo "$conflicted"
+
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            if [[ "$file" == *CHANGELOG.md ]]; then
+              git checkout --theirs "$file"
+              continue
+            fi
+
+            if [[ "$file" == *package-lock.json ]]; then
+              git checkout --theirs "$file"
+              continue
+            fi
+
+            if [[ "$file" == *package.json ]]; then
+              node "$GITHUB_WORKSPACE/scripts/merge-package-json.mjs" "$file"
+              continue
+            fi
+
+            echo "Skipping because $file is not within the supported auto-resolve list."
+            unsupported=1
+          done <<< "$conflicted"
+
+          if [ "$unsupported" -ne 0 ]; then
+            echo "Found unsupported conflicted files. Aborting without changes."
+            git merge --abort
+            echo "resolved=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if git diff --name-only --diff-filter=U | grep -q .; then
+            echo "Conflicts remain after running the resolver."
+            exit 1
+          fi
+
+          echo "$conflicted" | xargs git add
+
+          if git diff --cached --quiet; then
+            echo "After staging there are no changes. Aborting merge."
+            git merge --abort
+            echo "resolved=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git commit -m "chore: auto-resolve publish conflicts"
+          git push origin HEAD
+
+          echo "resolved=true" >> "$GITHUB_OUTPUT"
+          last_commit="$(git rev-parse HEAD)"
+          echo "commit=$last_commit" >> "$GITHUB_OUTPUT"
+          echo "files<<EOF" >> "$GITHUB_OUTPUT"
+          if git rev-parse HEAD^ >/dev/null 2>&1; then
+            git diff --name-only HEAD^ HEAD
+          else
+            git show --pretty="" --name-only HEAD
+          fi
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Comment on the PR
+        if: steps.resolver.outputs.resolved == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          files="${{ steps.resolver.outputs.files }}"
+          commit="${{ steps.resolver.outputs.commit }}"
+          {
+            echo "✅ Auto-resolved publishing conflicts."
+            echo ""
+            echo "Commit: \`$commit\`"
+            echo ""
+            if [ -n "$files" ]; then
+              echo "Updated files:"
+              while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                echo "- \`$line\`"
+              done <<< "$files"
+              echo ""
+            fi
+            echo "_This was performed by the **Auto Resolve Publish Conflicts** workflow._"
+          } > body.md
+          gh pr comment "${{ steps.pr.outputs.pr_number }}" --body-file body.md
+
