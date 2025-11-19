@@ -167,6 +167,99 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
+          tmp_merge_script="$(mktemp /tmp/merge-package-json.XXXXXX.mjs)"
+          cat <<'NODE' > "$tmp_merge_script"
+          import { execSync } from 'node:child_process';
+          import fs from 'node:fs';
+
+          const filepath = process.argv[2];
+
+          if (!filepath) {
+            console.error('[merge-package-json] Missing file path argument.');
+            process.exit(1);
+          }
+
+          const readStage = (stage) => {
+            try {
+              const output = execSync(`git show :${stage}:${filepath}`, { encoding: 'utf8' });
+              return JSON.parse(output);
+            } catch (error) {
+              console.error(`[merge-package-json] Unable to read stage ${stage} for ${filepath}.`);
+              throw error;
+            }
+          };
+
+          const sortObjectKeys = (input) => {
+            if (!input) {
+              return undefined;
+            }
+
+            return Object.keys(input)
+              .sort()
+              .reduce((acc, key) => {
+                acc[key] = input[key];
+                return acc;
+              }, {});
+          };
+
+          const mergeDependencyBlock = (prBlock, baseBlock) => {
+            if (!prBlock && !baseBlock) {
+              return undefined;
+            }
+
+            const result = { ...(prBlock || {}) };
+
+            if (baseBlock) {
+              for (const [name, version] of Object.entries(baseBlock)) {
+                // base branch wins on conflicts, adds base-only deps
+                result[name] = version;
+              }
+            }
+
+            const sorted = sortObjectKeys(result);
+            return sorted && Object.keys(sorted).length > 0 ? sorted : undefined;
+          };
+
+          const prPackage = readStage(2);   // ours (PR)
+          const basePackage = readStage(3); // theirs (base)
+
+          if (!prPackage || !basePackage) {
+            console.error('[merge-package-json] Required merge stages are missing.');
+            process.exit(1);
+          }
+
+          // Start from PR version and overlay base rules
+          const mergedPackage = structuredClone(prPackage);
+
+          // Version always from base
+          if (basePackage.version) {
+            mergedPackage.version = basePackage.version;
+          }
+
+          const dependencyFields = [
+            'dependencies',
+            'devDependencies',
+            'peerDependencies',
+            'optionalDependencies',
+            'bundledDependencies',
+            'bundleDependencies',
+          ];
+
+          for (const field of dependencyFields) {
+            const mergedBlock = mergeDependencyBlock(prPackage[field], basePackage[field]);
+            if (mergedBlock) {
+              mergedPackage[field] = mergedBlock;
+            } else {
+              delete mergedPackage[field];
+            }
+          }
+
+          // Preserve all other fields from PR branch
+          fs.writeFileSync(filepath, `${JSON.stringify(mergedPackage, null, 2)}\n`, 'utf8');
+          console.log(`[merge-package-json] Resolved ${filepath}`);
+          NODE
+          trap 'rm -f "$tmp_merge_script"' EXIT
+
           # Try merge base into PR branch without committing
           set +e
           git merge --no-commit --no-ff base/"$BASE_REF"
@@ -209,96 +302,8 @@ jobs:
 
             # package.json: smart merge via Node script
             if [[ "$file" == *package.json ]]; then
-              node --input-type=module - "$file" <<'NODE'
-import { execSync } from 'node:child_process';
-import fs from 'node:fs';
+              node "$tmp_merge_script" "$file"
 
-const filepath = process.argv[2];
-
-if (!filepath) {
-  console.error('[merge-package-json] Missing file path argument.');
-  process.exit(1);
-}
-
-const readStage = (stage) => {
-  try {
-    const output = execSync(\`git show :\${stage}:\${filepath}\`, { encoding: 'utf8' });
-    return JSON.parse(output);
-  } catch (error) {
-    console.error(\`[merge-package-json] Unable to read stage \${stage} for \${filepath}.\`);
-    throw error;
-  }
-};
-
-const sortObjectKeys = (input) => {
-  if (!input) {
-    return undefined;
-  }
-
-  return Object.keys(input)
-    .sort()
-    .reduce((acc, key) => {
-      acc[key] = input[key];
-      return acc;
-    }, {});
-};
-
-const mergeDependencyBlock = (prBlock, baseBlock) => {
-  if (!prBlock && !baseBlock) {
-    return undefined;
-  }
-
-  const result = { ...(prBlock || {}) };
-
-  if (baseBlock) {
-    for (const [name, version] of Object.entries(baseBlock)) {
-      // base branch wins on conflicts, adds base-only deps
-      result[name] = version;
-    }
-  }
-
-  const sorted = sortObjectKeys(result);
-  return sorted && Object.keys(sorted).length > 0 ? sorted : undefined;
-};
-
-const prPackage = readStage(2);   // ours (PR)
-const basePackage = readStage(3); // theirs (base)
-
-if (!prPackage || !basePackage) {
-  console.error('[merge-package-json] Required merge stages are missing.');
-  process.exit(1);
-}
-
-// Start from PR version and overlay base rules
-const mergedPackage = structuredClone(prPackage);
-
-// Version always from base
-if (basePackage.version) {
-  mergedPackage.version = basePackage.version;
-}
-
-const dependencyFields = [
-  'dependencies',
-  'devDependencies',
-  'peerDependencies',
-  'optionalDependencies',
-  'bundledDependencies',
-  'bundleDependencies',
-];
-
-for (const field of dependencyFields) {
-  const mergedBlock = mergeDependencyBlock(prPackage[field], basePackage[field]);
-  if (mergedBlock) {
-    mergedPackage[field] = mergedBlock;
-  } else {
-    delete mergedPackage[field];
-  }
-}
-
-// Preserve all other fields from PR branch
-fs.writeFileSync(filepath, \`\${JSON.stringify(mergedPackage, null, 2)}\n\`, 'utf8');
-console.log(\`[merge-package-json] Resolved \${filepath}\`);
-NODE
               continue
             fi
 
