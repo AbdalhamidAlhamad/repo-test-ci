@@ -305,6 +305,36 @@ function compareVersions(v1: string, v2: string): number {
   return 0;
 }
 
+function compareCanaryVersions(
+  parts1: string[],
+  parts2: string[],
+): number | null {
+  if (
+    parts1.length < 3 ||
+    parts2.length < 3 ||
+    parts1[0]?.toLowerCase() !== "canary" ||
+    parts2[0]?.toLowerCase() !== "canary"
+  ) {
+    return null;
+  }
+
+  const timestamp1 = Number(parts1[parts1.length - 1]);
+  const timestamp2 = Number(parts2[parts2.length - 1]);
+
+  if (!isNaN(timestamp1) && !isNaN(timestamp2)) {
+    return timestamp1 > timestamp2 ? 1 : -1;
+  }
+
+  if (parts1.length >= 2 && parts2.length >= 2) {
+    const hash1 = parts1[1];
+    const hash2 = parts2[1];
+    const hashCompare = hash1.localeCompare(hash2);
+    if (hashCompare !== 0) return hashCompare > 0 ? 1 : -1;
+  }
+
+  return null;
+}
+
 function comparePrerelease(
   prerelease1: string | null,
   prerelease2: string | null,
@@ -315,6 +345,12 @@ function comparePrerelease(
 
   const parts1 = prerelease1.split(".");
   const parts2 = prerelease2.split(".");
+
+  const canaryComparison = compareCanaryVersions(parts1, parts2);
+  
+  if (canaryComparison) {
+    return canaryComparison;
+  }
 
   for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
     const part1 = parts1[i];
