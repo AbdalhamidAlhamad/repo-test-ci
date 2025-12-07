@@ -14,6 +14,9 @@ export async function resolveConflictsForPR(prInfo: PRInfo): Promise<boolean> {
     configureGitRemotes(prInfo);
     disableGitHooks();
 
+    // Save the original HEAD before merging
+    const originalHead = runCommand("git rev-parse HEAD").trim();
+
     const hadConflicts = mergeBaseIntoHead(prInfo);
     if (!hadConflicts) {
       return false;
@@ -25,7 +28,7 @@ export async function resolveConflictsForPR(prInfo: PRInfo): Promise<boolean> {
     await regenerateLockfilesIfNeeded(conflicts);
     stageResolvedFiles(conflicts);
     ensureNoRemainingConflicts();
-    ensureHasStagedChanges();
+    ensureHasStagedChanges(originalHead);
     commitAndPush();
 
     return true;
@@ -238,14 +241,30 @@ function ensureNoRemainingConflicts(): void {
   }
 }
 
-function ensureHasStagedChanges(): void {
+function ensureHasStagedChanges(originalHead: string): void {
   try {
-    const output = runCommand("git diff --cached --name-only");
+    // Check if there are any changes compared to the original PR branch HEAD
+    // During a merge, we need to compare against the original HEAD, not the merge state
+    const headDiff = runCommand(`git diff ${originalHead} --name-only`).trim();
+    const stagedDiff = runCommand("git diff --cached --name-only").trim();
 
-    const hasChanges = output.trim().length > 0;
+    // If we have working tree changes, make sure they're staged
+    if (headDiff && !stagedDiff) {
+      const changedFiles = headDiff.split("\n").filter(Boolean);
+      const filesToStage = changedFiles.map((f) => `"${f}"`).join(" ");
+      if (filesToStage) {
+        runCommand(`git add ${filesToStage}`);
+        print.info(`Staged changes: ${changedFiles.join(", ")}`);
+      }
+    }
 
-    if (!hasChanges) {
-      print.info("After staging there are no changes. Aborting merge.");
+    // Re-check staged changes after potentially staging working tree changes
+    const finalStagedDiff = runCommand("git diff --cached --name-only").trim();
+
+    if (!finalStagedDiff) {
+      print.info(
+        "After resolving conflicts, there are no changes compared to the original branch. The resolved state matches what's already in the PR branch.",
+      );
       abortMergeSafely();
       throw new Error(Errors.NO_STAGED_CHANGES);
     }
