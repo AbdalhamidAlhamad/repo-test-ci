@@ -32,7 +32,7 @@ permissions:
 jobs:
   resolve-prs:
     name: Auto-resolve publish conflicts
-    runs-on: CT-selfhosted
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
