@@ -6,7 +6,6 @@ on:
   push:
     branches:
       - main
-      - sandbox-branch
   workflow_dispatch:
     inputs:
       mode:
@@ -49,14 +48,6 @@ jobs:
 
       - name: Build CLI
         run: npm run build --prefix cli
-
-      - name: Verify build exists
-        run: |
-          if [ ! -f "cli/build/cli.js" ]; then
-            echo "Error: Build failed - cli/build/cli.js does not exist"
-            exit 1
-          fi
-          echo "✅ Build verified: cli/build/cli.js exists"
 
       - name: Auto-resolve publishing conflicts
         env:
