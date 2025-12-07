@@ -267,6 +267,7 @@ function ensureHasStagedChanges(originalHead: string): void {
     if (error instanceof Error && error.message === Errors.NO_STAGED_CHANGES) {
       throw error;
     }
+    
     print.error(`Failed to check staged changes: ${error}`);
     throw error;
   }
