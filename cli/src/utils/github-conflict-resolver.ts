@@ -15,7 +15,9 @@ export async function resolveConflictsForPR(prInfo: PRInfo): Promise<boolean> {
     disableGitHooks();
 
     // Save the original HEAD before merging
-    const originalHead = runCommand("git rev-parse HEAD").trim();
+    const originalHead = runCommand("git rev-parse HEAD", {
+      allowFailure: false,
+    }).trim();
 
     const hadConflicts = mergeBaseIntoHead(prInfo);
     if (!hadConflicts) {
@@ -51,8 +53,12 @@ function abortMergeSafely(): void {
 function checkoutPrBranch(prInfo: PRInfo): void {
   try {
     print.info(`Checking out PR branch: ${prInfo.headRef}`);
-    runCommand(`git fetch origin ${prInfo.headRef}`);
-    runCommand(`git checkout ${prInfo.headRef}`);
+    runCommand(`git fetch origin ${prInfo.headRef}`, {
+      allowFailure: false,
+    });
+    runCommand(`git checkout ${prInfo.headRef}`, {
+      allowFailure: false,
+    });
   } catch (error) {
     print.error(`Failed to checkout PR branch: ${error}`);
     throw error;
@@ -61,9 +67,14 @@ function checkoutPrBranch(prInfo: PRInfo): void {
 
 function configureGitUser(): void {
   try {
-    runCommand('git config user.name "github-actions[bot]"');
+    runCommand('git config user.name "github-actions[bot]"', {
+      allowFailure: false,
+    });
     runCommand(
       'git config user.email "github-actions[bot]@users.noreply.github.com"',
+      {
+        allowFailure: false,
+      },
     );
   } catch (error) {
     print.error(`Failed to configure git user: ${error}`);
@@ -73,7 +84,9 @@ function configureGitUser(): void {
 
 function configureGitRemotes(prInfo: PRInfo): void {
   try {
-    const remotesOutput = runCommand("git remote");
+    const remotesOutput = runCommand("git remote", {
+      allowFailure: false,
+    });
 
     const remotes = remotesOutput
       .trim()
@@ -81,14 +94,20 @@ function configureGitRemotes(prInfo: PRInfo): void {
       .filter((r) => r.length > 0);
 
     if (remotes.includes("base")) {
-      runCommand("git remote remove base");
+      runCommand("git remote remove base", {
+        errorLevel: "warning",
+      });
     }
 
     const [owner, repo] = prInfo.headRepoFull.split("/");
     const repoUrl = `https://github.com/${owner}/${repo}.git`;
 
-    runCommand(`git remote add base "${repoUrl}"`);
-    runCommand(`git fetch base "${prInfo.baseRef}"`);
+    runCommand(`git remote add base "${repoUrl}"`, {
+      allowFailure: false,
+    });
+    runCommand(`git fetch base "${prInfo.baseRef}"`, {
+      allowFailure: false,
+    });
   } catch (error) {
     print.error(`Failed to configure git remotes: ${error}`);
     throw error;
@@ -129,7 +148,9 @@ function mergeBaseIntoHead(prInfo: PRInfo): boolean {
 
 function getConflictedFiles(): ConflictSummary {
   try {
-    const output = runCommand("git diff --name-only --diff-filter=U");
+    const output = runCommand("git diff --name-only --diff-filter=U", {
+      allowFailure: false,
+    });
 
     const files = output
       .trim()
@@ -171,7 +192,9 @@ async function handleSupportedConflicts(
 
     if (file.includes("CHANGELOG.md")) {
       try {
-        runCommand(`git checkout --theirs "${file}"`);
+        runCommand(`git checkout --theirs "${file}"`, {
+          allowFailure: false,
+        });
         print.success(`✅ Resolved ${file} (using base branch version)`);
         continue;
       } catch (error) {
@@ -218,7 +241,9 @@ function stageResolvedFiles(conflicts: ConflictSummary): void {
     }
 
     const args = filesToStage.map((f) => `"${f}"`).join(" ");
-    runCommand(`git add ${args}`);
+    runCommand(`git add ${args}`, {
+      allowFailure: false,
+    });
   } catch (error) {
     print.error(`Failed to stage files: ${error}`);
     abortMergeSafely();
@@ -228,7 +253,9 @@ function stageResolvedFiles(conflicts: ConflictSummary): void {
 
 function ensureNoRemainingConflicts(): void {
   try {
-    const remaining = runCommand("git diff --name-only --diff-filter=U");
+    const remaining = runCommand("git diff --name-only --diff-filter=U", {
+      allowFailure: false,
+    });
 
     if (remaining.trim().length > 0) {
       print.error("Conflicts remain after running the resolver.");
@@ -246,23 +273,34 @@ function ensureNoRemainingConflicts(): void {
 function ensureHasStagedChanges(originalHead: string): boolean {
   try {
     // First, ensure all resolved files are staged
-    const stagedDiff = runCommand("git diff --cached --name-only").trim();
-    const workingTreeDiff = runCommand("git diff --name-only").trim();
+    const stagedDiff = runCommand("git diff --cached --name-only", {
+      allowFailure: false,
+    }).trim();
+    const workingTreeDiff = runCommand("git diff --name-only", {
+      allowFailure: false,
+    }).trim();
 
     // Stage any unstaged working tree changes
     if (workingTreeDiff && !stagedDiff.includes(workingTreeDiff)) {
       const changedFiles = workingTreeDiff.split("\n").filter(Boolean);
       const filesToStage = changedFiles.map((f) => `"${f}"`).join(" ");
       if (filesToStage) {
-        runCommand(`git add ${filesToStage}`);
+        runCommand(`git add ${filesToStage}`, {
+          allowFailure: false,
+        });
         print.info(`Staged working tree changes: ${changedFiles.join(", ")}`);
       }
     }
 
 
-    const finalStagedDiff = runCommand("git diff --cached --name-only").trim();
+    const finalStagedDiff = runCommand("git diff --cached --name-only", {
+      allowFailure: false,
+    }).trim();
     const diffAgainstOriginal = runCommand(
       `git diff ${originalHead} --name-only`,
+      {
+        allowFailure: false,
+      },
     ).trim();
 
     if (!finalStagedDiff && !diffAgainstOriginal) {
@@ -277,9 +315,9 @@ function ensureHasStagedChanges(originalHead: string): boolean {
       const env = { ...process.env, SKIP_HUSKY: "1" };
       runCommand(
         'git commit --no-verify --allow-empty -m "chore: auto-resolve publish conflicts (resolved state matches branch)"',
-        { env },
+        { env, allowFailure: false },
       );
-      runCommand("git push origin HEAD", { env });
+      runCommand("git push origin HEAD", { env, allowFailure: false });
       print.success(
         "✅ Completed merge (resolved state matches branch, but merge is now complete)",
       );
@@ -310,9 +348,9 @@ function commitAndPush(): void {
 
     runCommand(
       'git commit --no-verify -m "chore: auto-resolve publish conflicts"',
-      { env },
+      { env, allowFailure: false },
     );
-    runCommand("git push origin HEAD", { env });
+    runCommand("git push origin HEAD", { env, allowFailure: false });
 
     print.success("✅ Successfully resolved and pushed conflicts");
   } catch (error) {
