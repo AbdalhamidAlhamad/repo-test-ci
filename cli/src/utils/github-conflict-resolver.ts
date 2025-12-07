@@ -243,12 +243,9 @@ function ensureNoRemainingConflicts(): void {
 
 function ensureHasStagedChanges(originalHead: string): void {
   try {
-    // Check if there are any changes compared to the original PR branch HEAD
-    // During a merge, we need to compare against the original HEAD, not the merge state
     const headDiff = runCommand(`git diff ${originalHead} --name-only`).trim();
     const stagedDiff = runCommand("git diff --cached --name-only").trim();
 
-    // If we have working tree changes, make sure they're staged
     if (headDiff && !stagedDiff) {
       const changedFiles = headDiff.split("\n").filter(Boolean);
       const filesToStage = changedFiles.map((f) => `"${f}"`).join(" ");
@@ -257,8 +254,6 @@ function ensureHasStagedChanges(originalHead: string): void {
         print.info(`Staged changes: ${changedFiles.join(", ")}`);
       }
     }
-
-    // Re-check staged changes after potentially staging working tree changes
     const finalStagedDiff = runCommand("git diff --cached --name-only").trim();
 
     if (!finalStagedDiff) {
