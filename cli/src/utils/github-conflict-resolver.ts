@@ -28,8 +28,10 @@ export async function resolveConflictsForPR(prInfo: PRInfo): Promise<boolean> {
     await regenerateLockfilesIfNeeded(conflicts);
     stageResolvedFiles(conflicts);
     ensureNoRemainingConflicts();
-    ensureHasStagedChanges(originalHead);
-    commitAndPush();
+    const hasChanges = ensureHasStagedChanges(originalHead);
+    if (hasChanges) {
+      commitAndPush();
+    }
 
     return true;
   } catch (error) {
@@ -241,33 +243,62 @@ function ensureNoRemainingConflicts(): void {
   }
 }
 
-function ensureHasStagedChanges(originalHead: string): void {
+function ensureHasStagedChanges(originalHead: string): boolean {
   try {
-    const headDiff = runCommand(`git diff ${originalHead} --name-only`).trim();
+    // First, ensure all resolved files are staged
     const stagedDiff = runCommand("git diff --cached --name-only").trim();
+    const workingTreeDiff = runCommand("git diff --name-only").trim();
 
-    if (headDiff && !stagedDiff) {
-      const changedFiles = headDiff.split("\n").filter(Boolean);
+    // Stage any unstaged working tree changes
+    if (workingTreeDiff && !stagedDiff.includes(workingTreeDiff)) {
+      const changedFiles = workingTreeDiff.split("\n").filter(Boolean);
       const filesToStage = changedFiles.map((f) => `"${f}"`).join(" ");
       if (filesToStage) {
         runCommand(`git add ${filesToStage}`);
-        print.info(`Staged changes: ${changedFiles.join(", ")}`);
+        print.info(`Staged working tree changes: ${changedFiles.join(", ")}`);
       }
     }
-    const finalStagedDiff = runCommand("git diff --cached --name-only").trim();
 
-    if (!finalStagedDiff) {
+
+    const finalStagedDiff = runCommand("git diff --cached --name-only").trim();
+    const diffAgainstOriginal = runCommand(
+      `git diff ${originalHead} --name-only`,
+    ).trim();
+
+    if (!finalStagedDiff && !diffAgainstOriginal) {
+      // No changes at all - resolved state matches PR branch exactly
       print.info(
-        "After resolving conflicts, there are no changes compared to the original branch. The resolved state matches what's already in the PR branch.",
+        "After resolving conflicts, the resolved state exactly matches the PR branch. No changes needed.",
       );
-      abortMergeSafely();
-      throw new Error(Errors.NO_STAGED_CHANGES);
+      print.info(
+        "Completing merge with empty commit to update branch pointer and mark conflicts as resolved.",
+      );
+      // Complete the merge with an empty commit to update the branch
+      const env = { ...process.env, SKIP_HUSKY: "1" };
+      runCommand(
+        'git commit --no-verify --allow-empty -m "chore: auto-resolve publish conflicts (resolved state matches branch)"',
+        { env },
+      );
+      runCommand("git push origin HEAD", { env });
+      print.success(
+        "✅ Completed merge (resolved state matches branch, but merge is now complete)",
+      );
+      return false;
     }
+
+    if (finalStagedDiff && !diffAgainstOriginal) {
+
+      print.warning(
+        "Staged changes exist but match original branch. Completing merge anyway.",
+      );
+    }
+
+    return true;
   } catch (error) {
     if (error instanceof Error && error.message === Errors.NO_STAGED_CHANGES) {
       throw error;
     }
-    
+
     print.error(`Failed to check staged changes: ${error}`);
     throw error;
   }
