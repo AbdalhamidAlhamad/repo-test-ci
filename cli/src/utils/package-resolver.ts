@@ -147,6 +147,7 @@ function regenerateLockfile(lockFile: string): void {
 
     runCommand("npm install --package-lock-only --ignore-scripts --no-audit", {
       cwd,
+      allowFailure: false,
     });
 
     print.success(
@@ -184,7 +185,9 @@ function regenerateRootLockfile(rootPackageJson: string): void {
       label: "cleanup",
     });
 
-    runCommand("npm install --package-lock-only --ignore-scripts --no-audit");
+    runCommand("npm install --package-lock-only --ignore-scripts --no-audit", {
+      allowFailure: false,
+    });
 
     print.success("✅ Regenerated root package-lock.json");
   } catch (error) {
@@ -196,7 +199,9 @@ function regenerateRootLockfile(rootPackageJson: string): void {
 
 function readStage(stage: number, filepath: string): PackageJson {
   try {
-    const output = runCommand(`git show :${stage}:${filepath}`);
+    const output = runCommand(`git show :${stage}:${filepath}`, {
+      allowFailure: false,
+    });
 
     return JSON.parse(output);
   } catch (error) {
