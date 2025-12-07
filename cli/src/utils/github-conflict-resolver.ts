@@ -99,9 +99,7 @@ function disableGitHooks(): void {
 
 function mergeBaseIntoHead(prInfo: PRInfo): boolean {
   try {
-    runCommand(`git merge --no-commit --no-ff base/${prInfo.baseRef}`, {
-      allowFailure: false,
-    });
+    runCommand(`git merge --no-commit --no-ff base/${prInfo.baseRef}`);
     print.info(
       "Merge completed without conflicts. Aborting because there is nothing to resolve.",
     );
