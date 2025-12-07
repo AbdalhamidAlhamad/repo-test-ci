@@ -1,0 +1,12 @@
+import { testRequestFactory } from "@/shared/utils/test.utils";
+import { POST as jobHandler } from "./route";
+
+const job = testRequestFactory(jobHandler);
+
+describe('<%= props.jobName %> job', () => {
+    it('should run successfully', async () => {
+    await expect(
+    job({ body: {} }),
+    ).resolves.toHaveProperty('status', 'success');
+    });
+    });

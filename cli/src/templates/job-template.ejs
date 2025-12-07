@@ -1,0 +1,15 @@
+import { loggerFactory } from "@/shared/utils/log.utils";
+import { Response, Request } from "express";
+import { handleError } from '../errors.utils';
+
+const log = loggerFactory('[<%= props.jobName %>]');
+
+export async function POST(req: Request, res: Response) {
+  try {
+  log('Job started...');
+  log('Completed Successfully!');
+  return res.json({ status: 'success' });
+  } catch (error) {
+  handleError(error);
+  }
+  }
