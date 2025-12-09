@@ -1,19 +1,29 @@
-import { Octokit } from "@octokit/rest";
+import type { Octokit } from "@octokit/rest";
 import { GitHubConfig } from "../types/github.types";
 
 export class GitHubClient {
   private octokit: Octokit;
   private owner: string;
   private repo: string;
+  private token: string;
 
   constructor(config: GitHubConfig) {
-    this.octokit = new Octokit({ auth: config.token });
     this.owner = config.owner;
     this.repo = config.repo;
+    this.token = config.token;
+  }
+
+  private async getOctokit(): Promise<Octokit> {
+    if (!this.octokit) {
+      const { Octokit } = await import("@octokit/rest");
+      this.octokit = new Octokit({ auth: this.token });
+    }
+    return this.octokit;
   }
 
   async getPullRequest(prNumber: number) {
-    const response = await this.octokit.rest.pulls.get({
+    const octokit = await this.getOctokit();
+    const response = await octokit.rest.pulls.get({
       owner: this.owner,
       repo: this.repo,
       pull_number: prNumber,
@@ -22,7 +32,8 @@ export class GitHubClient {
   }
 
   async listOpenPullRequests(baseBranch: string) {
-    const prs = await this.octokit.paginate(this.octokit.rest.pulls.list as any, {
+    const octokit = await this.getOctokit();
+    const prs = await octokit.paginate(octokit.rest.pulls.list, {
       owner: this.owner,
       repo: this.repo,
       state: "open",
@@ -34,11 +45,12 @@ export class GitHubClient {
 
   async listOpenPullRequestNumbers(baseBranch: string): Promise<number[]> {
     const prs = await this.listOpenPullRequests(baseBranch);
-    return prs.map((pr : any) => pr.number);
+    return prs.map((pr) => pr.number);
   }
 
   async createComment(prNumber: number, body: string) {
-    return this.octokit.rest.issues.createComment({
+    const octokit = await this.getOctokit();
+    return octokit.rest.issues.createComment({
       owner: this.owner,
       repo: this.repo,
       issue_number: prNumber,
@@ -76,7 +88,8 @@ export class GitHubClient {
     const pr = await this.getPullRequest(prNumber);
     const sha = pr.head.sha;
 
-    const commit = await this.octokit.rest.repos.getCommit({
+    const octokit = await this.getOctokit();
+    const commit = await octokit.rest.repos.getCommit({
       owner: this.owner,
       repo: this.repo,
       ref: sha,

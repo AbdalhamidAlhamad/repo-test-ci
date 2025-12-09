@@ -57,12 +57,6 @@ export async function buildEventContextFromGitHub(): Promise<EventContext> {
         eventBaseRef = eventPayload.pull_request.base?.ref || "main";
       }
 
-      if (eventPayload.ref) {
-        const branchName =
-          eventPayload.ref.match(/^refs\/heads\/(.+)$/)?.[1] || "main";
-        baseBranch = eventBaseRef = branchName;
-      }
-
       if (eventPayload.inputs) {
         mode = eventPayload.inputs.mode || "single";
         baseBranch = eventPayload.inputs.base_branch || "main";

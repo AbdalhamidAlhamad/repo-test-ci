@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import * as path from "path";
+import semver from "semver";
 import { ConflictSummary, PackageJson } from "../types/github.types";
 import { print } from "gluegun";
 import { runCommand } from "./command";
@@ -7,8 +8,6 @@ import { Errors } from "../constants/errors";
 
 const RANGE_PREFIX_REGEX = /^[\^~>=<]/;
 const RANGE_PREFIX_REMOVE_REGEX = /^[\^~>=<]+\s*/;
-const BASE_VERSION_REGEX = /^(\d+\.\d+\.\d+)/;
-const PRERELEASE_REGEX = /^\d+\.\d+\.\d+-(.+)$/;
 
 export async function mergePackageJson(filepath: string): Promise<void> {
   const PR_STAGE = 2;
@@ -123,6 +122,7 @@ function regenerateLockfile(lockFile: string): void {
 
     runCommand(`git add "${packageJsonPath}"`, {
       errorLevel: "warning",
+      throwOnFailure: false,
     });
 
     const cwd =
@@ -134,11 +134,13 @@ function regenerateLockfile(lockFile: string): void {
       cwd,
       errorLevel: "warning",
       label: "cleanup",
+      throwOnFailure: false,
     });
     runCommand("rm -rf packages/*/node_modules", {
       cwd: process.cwd(),
       errorLevel: "warning",
       label: "cleanup",
+      throwOnFailure: false,
     });
 
     print.info(
@@ -147,7 +149,6 @@ function regenerateLockfile(lockFile: string): void {
 
     runCommand("npm install --package-lock-only --ignore-scripts --no-audit", {
       cwd,
-      allowFailure: false,
     });
 
     print.success(
@@ -174,20 +175,21 @@ function regenerateRootLockfile(rootPackageJson: string): void {
 
     runCommand(`git add "${rootPackageJson}"`, {
       errorLevel: "warning",
+      throwOnFailure: false,
     });
 
     runCommand("rm -rf node_modules", {
       errorLevel: "warning",
       label: "cleanup",
+      throwOnFailure: false,
     });
     runCommand("rm -rf packages/*/node_modules", {
       errorLevel: "warning",
       label: "cleanup",
+      throwOnFailure: false,
     });
 
-    runCommand("npm install --package-lock-only --ignore-scripts --no-audit", {
-      allowFailure: false,
-    });
+    runCommand("npm install --package-lock-only --ignore-scripts --no-audit");
 
     print.success("✅ Regenerated root package-lock.json");
   } catch (error) {
@@ -199,9 +201,7 @@ function regenerateRootLockfile(rootPackageJson: string): void {
 
 function readStage(stage: number, filepath: string): PackageJson {
   try {
-    const output = runCommand(`git show :${stage}:${filepath}`, {
-      allowFailure: false,
-    });
+    const output = runCommand(`git show :${stage}:${filepath}`);
 
     return JSON.parse(output);
   } catch (error) {
@@ -236,7 +236,6 @@ function mergeDependencyBlock(
   for (const [name, baseVersion] of Object.entries(baseBlock)) {
     const prVersion = result[name];
     if (!prVersion) {
-      // Only base branch has this dependency
       result[name] = baseVersion;
       continue;
     }
@@ -257,25 +256,32 @@ function mergeDependencyBlock(
 }
 
 function getLatestVersion(version1: string, version2: string): string {
-  const base1 = extractBaseVersion(version1);
-  const base2 = extractBaseVersion(version2);
-  const prerelease1 = extractPrerelease(version1);
-  const prerelease2 = extractPrerelease(version2);
+  const cleaned1 = version1.replace(RANGE_PREFIX_REMOVE_REGEX, "").trim();
+  const cleaned2 = version2.replace(RANGE_PREFIX_REMOVE_REGEX, "").trim();
 
-  // Compare base versions first
-  const baseComparison = compareVersions(base1, base2);
+  const parsed1 = semver.parse(cleaned1) || semver.coerce(cleaned1) || null;
+  const parsed2 = semver.parse(cleaned2) || semver.coerce(cleaned2) || null;
 
-  if (baseComparison !== 0) {
-    return baseComparison > 0 ? version1 : version2;
+  if (parsed1 && !parsed2) return version1;
+  if (!parsed1 && parsed2) return version2;
+
+  if (!parsed1 && !parsed2) return version1;
+
+  if (
+    isCanaryWithTimestamp(parsed1.prerelease) &&
+    isCanaryWithTimestamp(parsed2.prerelease)
+  ) {
+    const tsCmp = compareCanaryTimestamp(
+      parsed1.prerelease,
+      parsed2.prerelease,
+    );
+    if (tsCmp > 0) return version1;
+    if (tsCmp < 0) return version2;
   }
 
-  const prereleaseComparison = comparePrerelease(prerelease1, prerelease2);
+  if (semver.gt(parsed1, parsed2)) return version1;
+  if (semver.lt(parsed1, parsed2)) return version2;
 
-  if (prereleaseComparison !== 0) {
-    return prereleaseComparison > 0 ? version1 : version2;
-  }
-
-  // Versions are equal - prefer the one without range prefix (more specific)
   const hasRange1 = RANGE_PREFIX_REGEX.test(version1);
   const hasRange2 = RANGE_PREFIX_REGEX.test(version2);
 
@@ -285,111 +291,44 @@ function getLatestVersion(version1: string, version2: string): string {
   return version1;
 }
 
-function extractBaseVersion(version: string): string {
-  const cleaned = version.replace(RANGE_PREFIX_REMOVE_REGEX, "").trim();
-  const match = cleaned.match(BASE_VERSION_REGEX);
-  return match ? match[1] : cleaned;
+function isCanaryWithTimestamp(
+  prerelease: readonly (string | number)[],
+): boolean {
+  if (!prerelease.length) return false;
+  if (String(prerelease[0]).toLowerCase() !== "canary") return false;
+
+  return prerelease.some((part) => /^\d{10,}$/.test(String(part)));
 }
 
-function extractPrerelease(version: string): string | null {
-  const cleaned = version.replace(RANGE_PREFIX_REMOVE_REGEX, "").trim();
-  const match = cleaned.match(PRERELEASE_REGEX);
-  return match ? match[1] : null;
-}
-
-function compareVersions(v1: string, v2: string): number {
-  const parts1 = v1.split(".").map(Number);
-  const parts2 = v2.split(".").map(Number);
-
-  for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
-    const part1 = parts1[i] || 0;
-    const part2 = parts2[i] || 0;
-    if (part1 > part2) return 1;
-    if (part1 < part2) return -1;
-  }
-  return 0;
-}
-
-function compareCanaryVersions(
-  parts1: string[],
-  parts2: string[],
-): number | null {
-  if (
-    parts1.length < 3 ||
-    parts2.length < 3 ||
-    parts1[0]?.toLowerCase() !== "canary" ||
-    parts2[0]?.toLowerCase() !== "canary"
-  ) {
-    return null;
-  }
-
-  const timestamp1 = Number(parts1[parts1.length - 1]);
-  const timestamp2 = Number(parts2[parts2.length - 1]);
-
-  if (!isNaN(timestamp1) && !isNaN(timestamp2)) {
-    return timestamp1 > timestamp2 ? 1 : -1;
-  }
-
-  if (parts1.length >= 2 && parts2.length >= 2) {
-    const hash1 = parts1[1];
-    const hash2 = parts2[1];
-    const hashCompare = hash1.localeCompare(hash2);
-    if (hashCompare !== 0) return hashCompare > 0 ? 1 : -1;
-  }
-
-  return null;
-}
-
-function comparePrerelease(
-  prerelease1: string | null,
-  prerelease2: string | null,
+function compareCanaryTimestamp(
+  prerelease1: readonly (string | number)[],
+  prerelease2: readonly (string | number)[],
 ): number {
-  if (!prerelease1 && !prerelease2) return 0;
-  if (!prerelease1) return 1;
-  if (!prerelease2) return -1;
+  const ts1 = extractNumericTimestamp(prerelease1);
+  const ts2 = extractNumericTimestamp(prerelease2);
 
-  const parts1 = prerelease1.split(".");
-  const parts2 = prerelease2.split(".");
-
-  const canaryComparison = compareCanaryVersions(parts1, parts2);
-  
-  if (canaryComparison) {
-    return canaryComparison;
-  }
-
-  for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
-    const part1 = parts1[i];
-    const part2 = parts2[i];
-
-    if (!part1 && !part2) continue;
-    if (!part1) return -1;
-    if (!part2) return 1;
-
-    const num1 = Number(part1);
-    const num2 = Number(part2);
-
-    if (!isNaN(num1) && !isNaN(num2)) {
-      if (num1 > num2) return 1;
-      if (num1 < num2) return -1;
-      continue;
-    }
-
-    const order: Record<string, number> = {
-      alpha: 1,
-      beta: 2,
-      rc: 3,
-      canary: 0,
-    };
-    const order1 = order[part1.toLowerCase()];
-    const order2 = order[part2.toLowerCase()];
-
-    if (order1 !== order2) {
-      return order1 > order2 ? 1 : -1;
-    }
-
-    const strCompare = part1.localeCompare(part2);
-    if (strCompare !== 0) return strCompare > 0 ? 1 : -1;
-  }
-
+  if (ts1 == null || ts2 == null) return 0;
+  if (ts1 > ts2) return 1;
+  if (ts1 < ts2) return -1;
   return 0;
+}
+
+function extractNumericTimestamp(
+  parts: readonly (string | number)[],
+): number | null {
+  let best: number | null = null;
+
+  for (const part of parts) {
+    const str = String(part);
+    if (!/^\d+$/.test(str)) continue;
+
+    const value = Number(str);
+    if (!Number.isFinite(value)) continue;
+
+    if (best === null || str.length > String(best).length) {
+      best = value;
+    }
+  }
+
+  return best;
 }

@@ -9,7 +9,7 @@ export function runCommand(
   const {
     cwd,
     env,
-    allowFailure = true,
+    throwOnFailure = true,
     captureOutput = true,
     errorLevel = "error",
     label = command.split(" ")[0],
@@ -52,7 +52,7 @@ export function runCommand(
       logFn(`[${label}] stderr:\n${stderr}`);
     }
 
-    if (allowFailure) {
+    if (!throwOnFailure) {
       return "";
     }
 

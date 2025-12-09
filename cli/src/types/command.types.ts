@@ -1,5 +1,5 @@
 export interface CommandOptions {
-  allowFailure?: boolean;
+  throwOnFailure?: boolean;
   captureOutput?: boolean;
   errorLevel?: ErrorLevel;
   label?: string;
