@@ -62,11 +62,12 @@ export async function mergePackageJson(filepath: string): Promise<void> {
 
 export async function regenerateLockfilesIfNeeded(
   conflicts: ConflictSummary,
-): Promise<void> {
+): Promise<string[]> {
   const { files, hasPackageJsonConflict, hasPackageLockConflict } = conflicts;
+  const regeneratedFiles: string[] = [];
 
   if (!hasPackageJsonConflict && !hasPackageLockConflict) {
-    return;
+    return regeneratedFiles;
   }
 
   const packageLockFiles = files.filter((file) =>
@@ -75,6 +76,7 @@ export async function regenerateLockfilesIfNeeded(
 
   for (const lockFile of packageLockFiles) {
     regenerateLockfile(lockFile);
+    regeneratedFiles.push(lockFile);
   }
 
   if (hasPackageJsonConflict && !hasPackageLockConflict) {
@@ -83,8 +85,11 @@ export async function regenerateLockfilesIfNeeded(
     );
     if (rootPackageJson) {
       regenerateRootLockfile(rootPackageJson);
+      regeneratedFiles.push("package-lock.json");
     }
   }
+
+  return regeneratedFiles;
 }
 
 function regenerateLockfile(lockFile: string): void {
