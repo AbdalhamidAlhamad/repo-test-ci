@@ -8,6 +8,7 @@ import {
 } from "../utils/github-actions-context";
 import { print } from "gluegun";
 import { Errors } from "../constants/errors";
+
 const command: GluegunCommand = {
   name: "auto-resolve:publish-conflicts",
   description:
