@@ -73,12 +73,14 @@ const command: GluegunCommand = {
             continue;
           }
 
-          const resolved = await resolveConflictsForPR(prInfo);
+          const { resolved, resolvedFiles } = await resolveConflictsForPR(
+            prInfo,
+          );
           processedCount += 1;
 
           if (resolved) {
             resolvedCount += 1;
-            await commentWithSummary(githubClient, prNum);
+            await commentWithSummary(githubClient, prNum, resolvedFiles);
           }
         } catch (error) {
           print.error(`Failed to process PR #${prNum}: ${error}`);
@@ -178,14 +180,15 @@ async function selectPullRequestsForWorkflowDispatch(
 async function commentWithSummary(
   githubClient: GitHubClient,
   prNumber: number,
+  resolvedFiles: string[],
 ) {
   try {
-    const { sha, files } =
-      await githubClient.getHeadCommitSummaryForPr(prNumber);
+    const { sha } = await githubClient.getHeadCommitSummaryForPr(prNumber);
 
-    const updatedFilesLines = files.length
-      ? ["Updated files:", ...files.map((f) => `- \`${f}\``), ""]
-      : [];
+    const updatedFilesLines =
+      resolvedFiles.length > 0
+        ? ["Updated files:", ...resolvedFiles.map((f) => `- \`${f}\``), ""]
+        : [];
 
     const commentBody = [
       "✅ Auto-resolved publishing conflicts.",

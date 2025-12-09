@@ -7,7 +7,9 @@ import {
 import { Errors } from "../constants/errors";
 import { runCommand } from "./command";
 
-export async function resolveConflictsForPR(prInfo: PRInfo): Promise<boolean> {
+export async function resolveConflictsForPR(
+  prInfo: PRInfo,
+): Promise<{ resolved: boolean; resolvedFiles: string[] }> {
   try {
     checkoutPrBranch(prInfo);
     configureGitUser();
@@ -18,13 +20,13 @@ export async function resolveConflictsForPR(prInfo: PRInfo): Promise<boolean> {
 
     const hadConflicts = mergeBaseIntoHead(prInfo);
     if (!hadConflicts) {
-      return false;
+      return { resolved: false, resolvedFiles: [] };
     }
 
     const conflicts = getConflictedFiles();
 
     await handleSupportedConflicts(conflicts);
-    await regenerateLockfilesIfNeeded(conflicts);
+    const regeneratedLockfiles = await regenerateLockfilesIfNeeded(conflicts);
     stageResolvedFiles(conflicts);
     ensureNoRemainingConflicts();
     const hasChanges = ensureHasStagedChanges(originalHead);
@@ -32,13 +34,27 @@ export async function resolveConflictsForPR(prInfo: PRInfo): Promise<boolean> {
       commitAndPush();
     }
 
-    return true;
+    // Collect only the supported files that were resolved
+    const resolvedFiles = [
+      ...conflicts.files.filter((file) => isSupportedFile(file)),
+      ...regeneratedLockfiles,
+    ].filter((file, index, arr) => arr.indexOf(file) === index); // Remove duplicates
+
+    return { resolved: true, resolvedFiles };
   } catch (error) {
     print.error(
       `Failed to resolve publish conflicts for PR #${prInfo.number}: ${error}`,
     );
-    return false;
+    return { resolved: false, resolvedFiles: [] };
   }
+}
+
+function isSupportedFile(filepath: string): boolean {
+  return (
+    filepath.includes("CHANGELOG.md") ||
+    filepath.includes("package.json") ||
+    filepath.includes("package-lock.json")
+  );
 }
 
 function abortMergeSafely(): void {
